@@ -7,7 +7,13 @@ import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { importSource } from "./import-module.ts";
 
-type Finding = ReturnType<typeof finding>;
+type Finding = Omit<ReturnType<typeof finding>, "severity"> & {
+  severity: {
+    level: "high" | "medium";
+    rationale?: string;
+    changeConditions?: string;
+  };
+};
 
 const {
   deepReducerInputsInputSchema,
@@ -15,7 +21,7 @@ const {
   getCodexSecurityDeepReducerInputs,
   recordCodexSecurityDeepReduction,
 } = await importSource(
-  new URL("../src/artifact-deep-reducer.ts", import.meta.url).pathname,
+  path.join(import.meta.dirname, "../src/artifact-deep-reducer.ts"),
 );
 
 const { validateReducerArtifacts } = await importSource(
@@ -73,7 +79,6 @@ try {
   const shared = finding("shared", "src/shared.ts");
   const independent = finding("independent", "src/independent.ts");
   const rejectedCoverage = {
-    completeness: "partial",
     surfaces: [
       {
         label: "SQL route",
@@ -114,7 +119,6 @@ try {
     id: "worker-002",
     result: workerDraft([shared, independent], {
       scope: { summary: "Shared and independent request handling." },
-      coverage: { ...workerDraft([]).coverage, completeness: "unknown" },
     }),
   });
   const originalWorkerArtifacts = await Promise.all(
@@ -356,7 +360,10 @@ try {
     );
   }
 
-  const mediumShared = { ...shared, severity: { level: "medium" } };
+  const mediumShared: Finding = {
+    ...shared,
+    severity: { level: "medium" },
+  };
   const conflictingWorker = await createWorker({
     workersRoot,
     label: "severity-conflict",
@@ -567,32 +574,7 @@ try {
   enrichedPrevious.findings[0].validation = {
     summary: "Both output routes bypass the same encoding control.",
   };
-  for (const legacyCoverage of [
-    rejectedCoverage,
-    {
-      completeness: "outdated",
-      surfaces: [null],
-      explicitExclusions: false,
-      deferred: 42,
-    },
-    "legacy coverage is no longer structured",
-  ]) {
-    const previousArtifact = JSON.stringify({
-      ...enrichedPrevious,
-      coverage: legacyCoverage,
-    });
-    await writeFile(path.join(outputRoot, "result.json"), previousArtifact);
-    assert.deepEqual(
-      (await getCodexSecurityDeepReducerInputs(nextContext)).previous,
-      enrichedPrevious,
-      "previous reducer coverage is ignored even when malformed; findings and scope remain intact",
-    );
-    assert.equal(
-      await readFile(path.join(outputRoot, "result.json"), "utf8"),
-      previousArtifact,
-      "reading a previous reduction does not rewrite its legacy coverage",
-    );
-  }
+  await writeJson(path.join(outputRoot, "result.json"), enrichedPrevious);
   const previousArtifact = await readFile(
     path.join(outputRoot, "result.json"),
     "utf8",
@@ -600,14 +582,9 @@ try {
   await recordCodexSecurityDeepReduction(nextContext, merged);
   const preservedEnrichment = await readJson(nextOutputRoot, "result.json");
   assert.equal(
-    Object.hasOwn(preservedEnrichment, "coverage"),
-    false,
-    "a subsequent accepted reduction omits the previous reducer's legacy coverage",
-  );
-  assert.equal(
     await readFile(path.join(outputRoot, "result.json"), "utf8"),
     previousArtifact,
-    "the original previous reduction remains available without rewriting its coverage",
+    "the original previous reduction remains unchanged",
   );
   assert.equal(
     preservedEnrichment.findings[0].provenance.previousFindings[0].summary,
@@ -655,7 +632,7 @@ try {
 
   for (const invalidCoverage of [
     undefined,
-    { ...workerDraft([]).coverage, completeness: "outdated" },
+    { ...workerDraft([]).coverage, deferred: "invalid" },
   ]) {
     await writeJson(first.resultPath, {
       ...first.result,
@@ -663,7 +640,7 @@ try {
     });
     await assert.rejects(
       getCodexSecurityDeepReducerInputs(context),
-      /coverage|completeness/,
+      /coverage/,
       "Standard worker coverage remains required and validated before projection",
     );
   }

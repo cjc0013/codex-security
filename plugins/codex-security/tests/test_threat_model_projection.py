@@ -11,16 +11,14 @@ import unittest.mock
 from pathlib import Path
 
 import test_finalize_scan_contract as fixtures
+from workbench_test_support import ScanFixtureTestCase
 
 FINALIZER = fixtures.FINALIZER
 
 
-class ThreatModelProjectionTest(unittest.TestCase):
+class ThreatModelProjectionTest(ScanFixtureTestCase):
     setUp = fixtures.FinalizeScanContractTest.setUp
-    tearDown = fixtures.FinalizeScanContractTest.tearDown
     write_scan = fixtures.FinalizeScanContractTest.write_scan
-    write_json = fixtures.FinalizeScanContractTest.write_json
-    read_json = fixtures.FinalizeScanContractTest.read_json
 
     def test_saves_and_exports_markdown_threat_model_without_changing_authored_body(self) -> None:
         body = "# Service Model\n\n| Asset | Owner |\n| --- | --- |\n| Queue | Service |\n\n```text\nA -> B\n```\n"
@@ -83,12 +81,16 @@ class ThreatModelProjectionTest(unittest.TestCase):
         self.assertIn(b"Service boundaries.", document)
 
     def test_exports_legacy_structured_model_extensions(self) -> None:
-        for extensions in (
-            {"format": "markdown"},
-            {"format": "markdown", "content": " \n"},
-            {"scope": "Repository-wide", "origin": "legacy-import"},
-            {"scope": {"includePaths": 42}, "origin": {"tool": "legacy"}},
-            {"scope": {"includePaths": ["src"], "excludePaths": 42, "summary": []}},
+        for extensions, expected_origin in (
+            ({"format": "markdown"}, "not recorded"),
+            ({"format": "markdown", "content": " \n"}, "not recorded"),
+            ({"scope": "Repository-wide", "origin": "legacy-import"}, "legacy-import"),
+            ({"scope": {"includePaths": 42}, "origin": {"tool": "legacy"}}, "not recorded"),
+            (
+                {"scope": {"includePaths": ["src"], "excludePaths": 42, "summary": []}},
+                "not recorded",
+            ),
+            ({"origin": ["generated"]}, "not recorded"),
         ):
             with self.subTest(extensions=extensions):
                 model = {"summary": "Existing structured model.", **extensions}
@@ -96,10 +98,10 @@ class ThreatModelProjectionTest(unittest.TestCase):
                 self.write_scan()
                 FINALIZER.finalize_scan(self.scan_dir)
                 self.assertEqual(self.read_json("scan-manifest.json")["scan"]["threatModel"], model)
-                self.assertIn(
-                    b"Existing structured model.",
-                    FINALIZER.build_threat_model_export(self.scan_dir),
-                )
+                document = FINALIZER.build_threat_model_export(self.scan_dir)
+                self.assertIn(b"Existing structured model.", document)
+                self.assertIn(f"- Model origin: {expected_origin}".encode(), document.splitlines())
+                self.assertEqual((self.scan_dir / "threatmodel.md").read_bytes(), document)
                 self.assertEqual(
                     FINALIZER.build_findings_export(self.scan_dir, "json"),
                     (self.scan_dir / "findings.json").read_bytes(),
@@ -119,11 +121,14 @@ class ThreatModelProjectionTest(unittest.TestCase):
 
     def test_exports_legacy_metadata_with_markdown_content(self) -> None:
         body = "# Saved model\n\nKeep **authored** detail.\n"
-        for metadata in (
-            {"origin": "legacy-import", "scope": "Repository-wide"},
-            {"origin": {"tool": "legacy"}, "scope": {"includePaths": 42}},
-            {"origin": None, "scope": None},
-            {"scope": {"includePaths": ["src"], "excludePaths": 42, "summary": []}},
+        for metadata, expected_origin in (
+            ({"origin": "legacy-import", "scope": "Repository-wide"}, "legacy-import"),
+            ({"origin": {"tool": "legacy"}, "scope": {"includePaths": 42}}, "not recorded"),
+            ({"origin": None, "scope": None}, "not recorded"),
+            (
+                {"scope": {"includePaths": ["src"], "excludePaths": 42, "summary": []}},
+                "not recorded",
+            ),
         ):
             with self.subTest(metadata=metadata):
                 model = {
@@ -141,6 +146,8 @@ class ThreatModelProjectionTest(unittest.TestCase):
                 document = FINALIZER.build_threat_model_export(self.scan_dir)
                 self.assertTrue(document.startswith(body.encode()))
                 self.assertNotIn(b"Existing structured model.", document)
+                self.assertIn(f"- Model origin: {expected_origin}".encode(), document.splitlines())
+                self.assertEqual((self.scan_dir / "threatmodel.md").read_bytes(), document)
                 self.assertEqual(
                     FINALIZER.describe_threat_model(self.scan_dir)["threatModel"], model
                 )
